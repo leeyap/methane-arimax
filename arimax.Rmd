@@ -20,7 +20,7 @@ library(ggplot2)
 Read in the SoilFluxPro raw observational data and reformat.
 
 ```{r read-data}
-raw_data <- read.csv("../tempest_observations.csv")
+raw_data <- read.csv("./data/tempest_observations.csv")
 
 # Clean column names
 colnames(raw_data) <- c("total volume (cm3)", "date and time", "TS_2 mean (C)", 
@@ -60,12 +60,12 @@ time_data <- clean_data %>%
   separate("date and time", into = c("date", "time"), sep = " ")
 
 # Write output
-write.csv(time_data, "./time_data.csv")
+write.csv(time_data, "./data/time_data.csv")
 
 # Assign labels for days with multiple observations exogenously
 # Manually mark dates with more than two observations
 # Read data back in
-time_data_with_labels <- read.csv("./time_data_with_label.csv") %>%
+time_data_with_labels <- read.csv("./data/time_data_with_label.csv") %>%
   select(-"X")
 
 colnames(time_data_with_labels) <- c("total volume (cm3)", "date", "time", "TS_2 mean (C)", 
