@@ -1,0 +1,239 @@
+---
+title: "ARIMAX setup"
+author: "Leeya Pressburger"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(tidyr)
+library(stats)
+library(forecast)
+library(lubridate)
+library(xts)
+library(ggplot2)
+```
+
+Read in the SoilFluxPro raw observational data and reformat.
+
+```{r read-data}
+raw_data <- read.csv("../tempest_observations.csv")
+
+# Clean column names
+colnames(raw_data) <- c("total volume (cm3)", "date and time", "TS_2 mean (C)", 
+                        "SWC_2 mean (m3m-3)", "FCH4 DRY (nmolm-2s-1)",
+                        "FCH4 DRY R2", "FCH4 DRY lin (nmolm-1s-1)",
+                        "FCH4 DRY lin R2", "FCO2 DRY (nmolm-2s-1)",
+                        "FCO2 DRY R2", "FCO2 DRY lin (nmolm-1s-1)",
+                        "FCO2 DRY lin R2", "CH4 DRY initial value",
+                        "CO2 DRY initial value", "label")
+
+# Remove rows of extra column names and make numeric columns as such
+data <- raw_data[-c(1:2),] %>%
+  mutate_at(vars("total volume (cm3)", "TS_2 mean (C)", 
+                 "SWC_2 mean (m3m-3)", "FCH4 DRY (nmolm-2s-1)",
+                 "FCH4 DRY R2", "FCH4 DRY lin (nmolm-1s-1)",
+                 "FCH4 DRY lin R2", "FCO2 DRY (nmolm-2s-1)",
+                 "FCO2 DRY R2", "FCO2 DRY lin (nmolm-1s-1)",
+                 "FCO2 DRY lin R2", "CH4 DRY initial value",
+                 "CO2 DRY initial value"), as.numeric) %>%
+  mutate(rep = rep_len("a", length.out = 9452))
+
+
+# Filter out 0 or NAs, obvious outliers, negative CO2 fluxes, and for R2 values < 0.6
+clean_data <- data %>%
+  filter(!(`FCO2 DRY (nmolm-2s-1)` %in% c(0, -9999, NaN)),
+         !(`FCH4 DRY (nmolm-2s-1)` %in% c(-0, -9999, NaN)),
+         `FCO2 DRY (nmolm-2s-1)` > 0,
+         `FCH4 DRY (nmolm-2s-1)` < 10000,
+         `FCO2 DRY (nmolm-2s-1)` < 10000,
+         `FCH4 DRY R2` > 0.6 & `FCO2 DRY R2` > 0.6 & `FCH4 DRY lin R2` > 0.6 & `FCO2 DRY lin R2` > 0.6)
+
+# Reformat date and time column to POSIXct and POSIXt
+clean_data$`date and time` <- ymd_hms(clean_data$`date and time`)
+
+# Split date and time column
+time_data <- clean_data %>%
+  separate("date and time", into = c("date", "time"), sep = " ")
+
+# Write output
+write.csv(time_data, "./time_data.csv")
+
+# Assign labels for days with multiple observations exogenously
+# Manually mark dates with more than two observations
+# Read data back in
+time_data_with_labels <- read.csv("./time_data_with_label.csv") %>%
+  select(-"X")
+
+colnames(time_data_with_labels) <- c("total volume (cm3)", "date", "time", "TS_2 mean (C)", 
+                                     "SWC_2 mean (m3m-3)", "FCH4 DRY (nmolm-2s-1)",
+                                     "FCH4 DRY R2", "FCH4 DRY lin (nmolm-1s-1)",
+                                     "FCH4 DRY lin R2", "FCO2 DRY (nmolm-2s-1)",
+                                     "FCO2 DRY R2", "FCO2 DRY lin (nmolm-1s-1)",
+                                     "FCO2 DRY lin R2", "CH4 DRY initial value",
+                                     "CO2 DRY initial value", "label", "repeat")
+
+# Take the average of each paired observation per day 
+averaged_data <- time_data_with_labels %>%
+  group_by(date, label, `repeat`) %>%
+  summarize_at(vars(c("total volume (cm3)", "TS_2 mean (C)", 
+                      "SWC_2 mean (m3m-3)", "FCH4 DRY (nmolm-2s-1)",
+                      "FCH4 DRY R2", "FCH4 DRY lin (nmolm-1s-1)",
+                      "FCH4 DRY lin R2", "FCO2 DRY (nmolm-2s-1)",
+                      "FCO2 DRY R2", "FCO2 DRY lin (nmolm-1s-1)",
+                      "FCO2 DRY lin R2", "CH4 DRY initial value",
+                      "CO2 DRY initial value")), mean)
+
+# Remove values that are close together, ~2 week frequency
+dates_rm <- c("2021-08-24", "2021-08-25", "2021-08-26", "2021-08-27", 
+              "2021-08-30", "2021-09-02", "2021-09-08", "2021-09-09", 
+              "2021-09-10", "2021-09-11", "2022-06-21", "2022-06-22", 
+              "2022-06-23", "2022-06-24", "2022-07-07", "2022-08-10", 
+              "2023-06-05", "2023-06-06", "2023-06-07", "2023-06-08")
+
+bimonthly_data <- averaged_data %>%
+  filter(!(date %in% dates_rm))
+
+```
+
+```{r control-group}
+# Look at 4 collars and see how similar they are
+# Look at the same days for all 4 (maybe for all of the collars)
+# Control: collars 1, 5, 9, and 13
+
+# Function to retrieve data for a particular collar
+access_collars <- function(collar_number){
+  collar <- bimonthly_data %>%
+    filter(label == collar_number) %>%
+    select(date, `FCH4 DRY (nmolm-2s-1)`) %>%
+    mutate(date = mdy(date))
+  return(collar)
+}
+
+# Get control collars
+collar_1 <- access_collars(1)
+collar_5 <- access_collars(5)
+collar_9 <- access_collars(9)
+collar_13 <- access_collars(13)
+
+# Find the common dates across all four collars
+common_dates_list <- Reduce(intersect, list(as.list(unique(collar_1$date)), 
+                                            as.list(unique(collar_5$date)), 
+                                            as.list(unique(collar_9$date)), 
+                                            as.list(unique(collar_13$date))))
+
+common_dates <- unlist(common_dates_list) %>% as.Date()
+
+# Filter collars for common dates among the four and get dates in chronological order
+collar_1_filter <- collar_1 %>% filter(date %in% common_dates)
+collar_1_filter$date <- sort(collar_1_filter$date)
+
+collar_5_filter <- collar_5 %>% filter(date %in% common_dates)
+collar_5_filter$date <- sort(collar_5_filter$date)
+
+collar_9_filter <- collar_9 %>% filter(date %in% common_dates)
+collar_9_filter$date <- sort(collar_9_filter$date)
+
+collar_13_filter <- collar_13 %>% filter(date %in% common_dates)
+collar_13_filter$date <- sort(collar_13_filter$date)
+
+# Check how far apart the observational data is
+time_difference <- function(data, i){
+  diff[1] <- "NA"
+  diff[i+1] <- data$date[i+1] - data$date[i]
+  return(diff)
+}
+
+# The "diff" column tells us how many days are between an observation and the
+# previous observation; e.g., if row 2's diff column is "13", this means
+# that observation 2 is 13 days after observation 1
+# We only need to check one collar since we use common dates
+# Note that the mean of the time diff is currently ~13.6 days
+collar_1_filter$diff <- time_difference(collar_1_filter, 1:82)
+days_between <- mean(as.numeric(collar_1_filter$diff[2:83]))
+
+# Create time series with a lag of 1/24 (bimonthly data)
+# 1/24 = 0.0417, which is our lag on the x axis of the acf/pacf graphs
+# How close are we to getting the lag right with this approx?
+# This is fairly close, let's use a deltat of 1/26 to approximate
+
+collar_1_ts <- ts(collar_1_filter$`FCH4 DRY (nmolm-2s-1)`, deltat = 1/26)
+collar_5_ts <- ts(collar_5_filter$`FCH4 DRY (nmolm-2s-1)`, deltat = 1/26)
+collar_9_ts <- ts(collar_9_filter$`FCH4 DRY (nmolm-2s-1)`, deltat = 1/26)
+collar_13_ts <- ts(collar_13_filter$`FCH4 DRY (nmolm-2s-1)`, deltat = 1/26)
+
+acf(collar_1_ts) -> a
+pacf(collar_1_ts) -> b
+
+acf(collar_5_ts) -> c
+pacf(collar_5_ts) -> d
+
+acf(collar_9_ts) -> e
+pacf(collar_9_ts) -> f
+
+acf(collar_13_ts) -> g
+pacf(collar_13_ts) -> h
+
+# Graph just methane flux for control collars
+control_collars <- bimonthly_data %>%
+  filter(label %in% c(1, 5, 9, 13)) %>%
+  select(date, `FCH4 DRY (nmolm-2s-1)`) %>%
+  mutate(date = mdy(date))
+
+avg_control <- control_collars %>%
+  group_by(date) %>%
+  summarize(`FCH4 DRY (nmolm-2s-1)` = mean(`FCH4 DRY (nmolm-2s-1)`))
+
+# Time series of the average flux across control collars
+all_ts <- ts(avg_control$`FCH4 DRY (nmolm-2s-1)`, deltat = 1/24)
+# lag 3 (maybe 5, although low statistical significance)
+acf(all_ts)
+# lag 2
+pacf(all_ts)
+
+# how to set up ar/ma models to plug in our lags
+# arma with the average control data
+# auto.arima will get the "d" 
+
+control_collars$label <- factor(control_collars$label, levels = c("1", "5", "9", "13"))
+
+collar_plot <- control_collars %>%
+  ggplot(aes(x = date, y = `FCH4 DRY (nmolm-2s-1)`, color = label)) +
+  geom_line(linewidth = 1) +
+  scale_color_manual(values = pals::cols25(n = 4)) +
+  theme_bw() + 
+  labs(x = "Date",
+       y = "Methane flux (nmolm-2s-1)",
+       title = "Methane flux over time for the four control collars - all_dates",
+       color = "Collar")
+
+ggsave(plot = collar_plot, filename = "methane_flux_control_collars.jpg", width = 9, height = 6, units = "in")
+
+common_collar_plot <- control_collars %>%
+  filter(date %in% common_dates) %>%
+  group_by(date) %>%
+  summarize(`FCH4 DRY (nmolm-2s-1)` = mean(`FCH4 DRY (nmolm-2s-1)`)) %>%
+  ggplot(aes(x = date, y = `FCH4 DRY (nmolm-2s-1)`)) +
+  geom_line(linewidth = 1) +
+  # scale_color_manual(values = pals::cols25(n = 4)) +
+  theme_bw() + 
+  labs(x = "Date",
+       y = "Methane flux (nmolm-2s-1)",
+       title = "Methane flux over time for the four control collars - common dates",
+       color = "Collar")
+
+ggsave(plot = common_collar_plot, filename = "methane_flux_control_collars_common.jpg", width = 9, height = 6, units = "in")
+
+# Plot time series for common dates
+c_dates <- tibble(dates = common_dates,
+                  count = rep_len(1, 73),
+                  type = "common")
+
+ggplot() + 
+  geom_point(data = c_dates, aes(x = dates, y = count, color = type)) +
+  geom_point(data = bimonthly_data, aes(x = as.Date(date), y = 1, color = "red"))
+
+```
