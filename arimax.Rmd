@@ -142,6 +142,7 @@ collar_13_filter$date <- sort(collar_13_filter$date)
 
 # Check how far apart the observational data is
 time_difference <- function(data, i){
+  diff <- vector()
   diff[1] <- "NA"
   diff[i+1] <- data$date[i+1] - data$date[i]
   return(diff)
@@ -210,7 +211,7 @@ collar_plot <- control_collars %>%
        title = "Methane flux over time for the four control collars - all_dates",
        color = "Collar")
 
-ggsave(plot = collar_plot, filename = "methane_flux_control_collars.jpg", width = 9, height = 6, units = "in")
+ggsave(plot = collar_plot, filename = "./figures/methane_flux_control_collars.jpg", width = 9, height = 6, units = "in")
 
 common_collar_plot <- control_collars %>%
   filter(date %in% common_dates) %>%
@@ -225,7 +226,7 @@ common_collar_plot <- control_collars %>%
        title = "Methane flux over time for the four control collars - common dates",
        color = "Collar")
 
-ggsave(plot = common_collar_plot, filename = "methane_flux_control_collars_common.jpg", width = 9, height = 6, units = "in")
+ggsave(plot = common_collar_plot, filename = "./figures/methane_flux_control_collars_common.jpg", width = 9, height = 6, units = "in")
 
 # Plot time series for common dates
 c_dates <- tibble(dates = common_dates,
